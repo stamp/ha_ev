@@ -1,0 +1,116 @@
+###############################################################################
+# EV CHARGING — HELPERS
+# Create label "ev_charging" in Settings → Labels first
+###############################################################################
+
+input_select:
+  ev_outlet_1_car:
+    name: "EV · Outlet 1 Car"
+    options: ["SSN96M", "EV6", "None"]
+    initial: "SSN96M"
+    icon: mdi:car-electric
+
+  ev_outlet_2_car:
+    name: "EV · Outlet 2 Car"
+    options: ["SSN96M", "EV6", "None"]
+    initial: "EV6"
+    icon: mdi:car-electric
+
+  ev_priority_car_mode:
+    name: "EV · Priority Selection Mode"
+    options:
+      - "Auto (Least Night Charging)"
+      - "SSN96M Always"
+      - "EV6 Always"
+    initial: "Auto (Least Night Charging)"
+    icon: mdi:car-cog
+
+  ev_outlet_1_charge_mode:
+    name: "EV · Outlet 1 Mode"
+    options: ["Off", "PV Surplus", "Scheduled Minimum", "Charge Now", "Charge Full By Tomorrow"]
+    initial: "Off"
+    icon: mdi:ev-station
+
+  ev_outlet_2_charge_mode:
+    name: "EV · Outlet 2 Mode"
+    options: ["Off", "PV Surplus", "Scheduled Minimum", "Charge Now", "Charge Full By Tomorrow"]
+    initial: "Off"
+    icon: mdi:ev-station
+
+input_number:
+  ev_min_weekday_range_km:
+    name: "EV · Min Weekday Range"
+    min: 10
+    max: 400
+    step: 5
+    initial: 80
+    unit_of_measurement: "km"
+    icon: mdi:map-marker-distance
+
+  ev_weekday_ready_by_hour:
+    name: "EV · Ready By Hour"
+    min: 4
+    max: 10
+    step: 1
+    initial: 7
+    unit_of_measurement: "h"
+    icon: mdi:clock-outline
+
+  ev_pv_surplus_min_watts:
+    name: "EV · PV Min Watts to Start"
+    min: 500
+    max: 5000
+    step: 100
+    initial: 1400
+    unit_of_measurement: "W"
+    icon: mdi:solar-power
+
+  ev_pv_surplus_hysteresis_watts:
+    name: "EV · PV Hysteresis Buffer"
+    min: 100
+    max: 1000
+    step: 50
+    initial: 300
+    unit_of_measurement: "W"
+    icon: mdi:sine-wave
+
+  ev_ssn96m_battery_kwh:
+    name: "EV · SSN96M Battery Capacity"
+    min: 20
+    max: 120
+    step: 1
+    initial: 78
+    unit_of_measurement: "kWh"
+    icon: mdi:battery
+
+  ev_ev6_battery_kwh:
+    name: "EV · EV6 Battery Capacity"
+    min: 20
+    max: 120
+    step: 1
+    initial: 77
+    unit_of_measurement: "kWh"
+    icon: mdi:battery
+
+input_boolean:
+  ev_weekend_full_charge:
+    name: "EV · Weekend Full Charge"
+    icon: mdi:car-battery
+    initial: false
+
+  ev_system_enabled:
+    name: "EV · System Enabled"
+    icon: mdi:power
+    initial: true
+
+  ev_pv_surplus_enabled:
+    name: "EV · PV Surplus Enabled"
+    icon: mdi:solar-power-variant
+    initial: true
+
+input_datetime:
+  ev_weekend_departure:
+    name: "EV · Weekend Departure"
+    has_date: true
+    has_time: true
+    icon: mdi:calendar-clock

@@ -1,0 +1,82 @@
+###############################################################################
+# EV CHARGING — SCRIPTS
+###############################################################################
+script:
+  ev_set_outlet_current:
+    alias: "EV · Set Outlet Current"
+    fields:
+      outlet: { required: true }
+      current: { required: true }
+    sequence:
+      - variables:
+          sensor_ent: "sensor.vpg1_2107009785a_{{ outlet | int }}"
+          cp_id: "{{ state_attr(sensor_ent, 'charge_point_id') }}"
+          conn_id: "{{ state_attr(sensor_ent, 'connector_id') }}"
+          safe_amps: "{{ [[current | int, 6] | max, 16] | min }}"
+      - condition: template
+        value_template: >
+          {{ cp_id not in [None,'','None','unknown','unavailable']
+             and conn_id not in [None,'','None','unknown','unavailable'] }}
+      - action: chargeamps.set_max_current
+        data:
+          chargepoint: "{{ cp_id }}"
+          connector: "{{ conn_id }}"
+          max_current: "{{ safe_amps }}"
+
+  ev_start_charging:
+    alias: "EV · Start Charging"
+    fields:
+      outlet: { required: true }
+      current: { required: false }
+    sequence:
+      - variables:
+          amps: "{{ current | default(16) | int }}"
+          sw: "switch.vpg1_2107009785a_{{ outlet | int }}"
+      - action: script.ev_set_outlet_current
+        data:
+          outlet: "{{ outlet }}"
+          current: "{{ amps }}"
+      - delay: { seconds: 2 }
+      - action: switch.turn_on
+        target:
+          entity_id: "{{ sw }}"
+
+  ev_stop_charging:
+    alias: "EV · Stop Charging"
+    fields:
+      outlet: { required: true }
+    sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: "switch.vpg1_2107009785a_{{ outlet | int }}"
+
+  ev_notify_car_connected:
+    alias: "EV · Notify Car Connected"
+    fields:
+      car_name: { required: true }
+      outlet: { required: true }
+      plan: { required: true }
+    sequence:
+      - variables:
+          r: >
+            {% if car_name == 'SSN96M' %}{{ states('sensor.ev_ssn96m_range') }}
+            {% else %}{{ states('sensor.ev_ev6_range') }}{% endif %}
+          s: >
+            {% if car_name == 'SSN96M' %}{{ states('sensor.ev_ssn96m_soc') }}
+            {% else %}{{ states('sensor.ev_ev6_soc') }}{% endif %}
+      - action: notify.all_devices
+        data:
+          title: "🔌 {{ car_name }} connected · Outlet {{ outlet }}"
+          message: |
+            {{ plan }}
+
+            🔋 {{ r }}km · {{ s }}%
+            💰 {{ states('sensor.ev_current_import_price') }} SEK/kWh
+          data:
+            actions:
+              - action: "EV_CHARGE_NOW_{{ outlet }}"
+                title: "⚡ Charge Now"
+              - action: "EV_CHARGE_FULL_{{ outlet }}"
+                title: "🔋 Full By Tomorrow"
+              - action: "EV_STOP_{{ outlet }}"
+                title: "🛑 Stop"

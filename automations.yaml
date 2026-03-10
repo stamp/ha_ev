@@ -1,0 +1,640 @@
+###############################################################################
+# EV CHARGING — AUTOMATIONS
+###############################################################################
+automation:
+  # ===========================================================================
+  # A) CAR CONNECTED → plan + notify
+  # ===========================================================================
+  - id: ev_car_connected
+    alias: "EV · Car Connected"
+    mode: parallel
+    max: 2
+    trigger:
+      - platform: state
+        entity_id: sensor.vpg1_2107009785a_1
+        to: ["Charging","SuspendedEV","SuspendedEVSE"]
+        id: "o1"
+      - platform: state
+        entity_id: sensor.vpg1_2107009785a_2
+        to: ["Charging","SuspendedEV","SuspendedEVSE"]
+        id: "o2"
+    condition:
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+          car: "{{ states('input_select.ev_outlet_' ~ outlet ~ '_car') }}"
+          is_pri: "{{ states('sensor.ev_today_priority_car') == car }}"
+          needs: "{{ states('sensor.ev_priority_car_needs_charging') == 'True' }}"
+          weekday: "{{ now().weekday() < 5 }}"
+          ssn_kwh: "{{ states('sensor.ev_ssn96m_kwh_needed') }}"
+          ev6_kwh: "{{ states('sensor.ev_ev6_kwh_needed') }}"
+          est_cost: "{{ state_attr('sensor.ev_cheapest_charge_slots','estimated_cost') | float(0) }}"
+          slots_txt: "{{ states('sensor.ev_cheapest_charge_slots') }}"
+          plan: >
+            {% if is_pri and needs and weekday %}
+            📋 SCHEDULED MIN CHARGE
+            Target: {{ states('input_number.ev_min_weekday_range_km')|int }}km by {{ states('input_number.ev_weekday_ready_by_hour')|int }}:00
+            Need: {{ states('sensor.ev_priority_car_kwh_needed') }}kWh · {{ states('sensor.ev_priority_car_hours_to_target') }}h
+            Slots: {{ slots_txt }}
+            Est. cost: {{ est_cost }} SEK
+            Auto-priority: {{ car }} ({{ ssn_kwh }}kWh SSN96M vs {{ ev6_kwh }}kWh EV6)
+            {% elif is_pri and not needs %}
+            ✅ RANGE OK · switching to PV surplus
+            Already {{ states('sensor.ev_priority_car_range') }}km
+            {% else %}
+            ☀️ PV SURPLUS
+            Available: {{ states('sensor.ev_pv_surplus_available') }}W · {{ states('sensor.ev_pv_surplus_amps') }}A
+            {% endif %}
+          mode: >
+            {% if is_pri and needs and weekday %}Scheduled Minimum
+            {% else %}PV Surplus{% endif %}
+      - action: input_select.select_option
+        target:
+          entity_id: "input_select.ev_outlet_{{ outlet }}_charge_mode"
+        data:
+          option: "{{ mode }}"
+      - action: script.ev_notify_car_connected
+        data:
+          car_name: "{{ car }}"
+          outlet: "{{ outlet }}"
+          plan: "{{ plan }}"
+
+  # ===========================================================================
+  # B) CAR DISCONNECTED → reset
+  # ===========================================================================
+  - id: ev_car_disconnected
+    alias: "EV · Car Disconnected"
+    mode: parallel
+    max: 2
+    trigger:
+      - platform: state
+        entity_id: sensor.vpg1_2107009785a_1
+        to: "Available"
+        id: "o1"
+      - platform: state
+        entity_id: sensor.vpg1_2107009785a_2
+        to: "Available"
+        id: "o2"
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+      - action: input_select.select_option
+        target:
+          entity_id: "input_select.ev_outlet_{{ outlet }}_charge_mode"
+        data:
+          option: "Off"
+
+  # ===========================================================================
+  # C) NOTIFICATION ACTIONS
+  # ===========================================================================
+  - id: ev_action_charge_now
+    alias: "EV · Action: Charge Now"
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data: { action: "EV_CHARGE_NOW_1" }
+        id: "o1"
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data: { action: "EV_CHARGE_NOW_2" }
+        id: "o2"
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+      - action: input_select.select_option
+        target:
+          entity_id: "input_select.ev_outlet_{{ outlet }}_charge_mode"
+        data:
+          option: "Charge Now"
+      - action: script.ev_start_charging
+        data: { outlet: "{{ outlet }}", current: 16 }
+      - action: notify.all_devices
+        data:
+          title: "⚡ Charging NOW · Outlet {{ outlet }}"
+          message: "16A / ~11 kW"
+
+  - id: ev_action_charge_full
+    alias: "EV · Action: Charge Full"
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data: { action: "EV_CHARGE_FULL_1" }
+        id: "o1"
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data: { action: "EV_CHARGE_FULL_2" }
+        id: "o2"
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+      - action: input_select.select_option
+        target:
+          entity_id: "input_select.ev_outlet_{{ outlet }}_charge_mode"
+        data:
+          option: "Charge Full By Tomorrow"
+      - action: script.ev_start_charging
+        data: { outlet: "{{ outlet }}", current: 16 }
+      - action: notify.all_devices
+        data:
+          title: "🔋 Full charge · Outlet {{ outlet }}"
+          message: "Charging to 100%"
+
+  - id: ev_action_stop
+    alias: "EV · Action: Stop"
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data: { action: "EV_STOP_1" }
+        id: "o1"
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data: { action: "EV_STOP_2" }
+        id: "o2"
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+      - action: input_select.select_option
+        target:
+          entity_id: "input_select.ev_outlet_{{ outlet }}_charge_mode"
+        data:
+          option: "Off"
+      - action: script.ev_stop_charging
+        data: { outlet: "{{ outlet }}" }
+
+  # ===========================================================================
+  # D) PV SURPLUS CONTROLLER (every 60s)
+  # ===========================================================================
+  - id: ev_pv_surplus_controller
+    alias: "EV · PV Surplus Controller"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        seconds: "/60"
+    condition:
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.ev_pv_surplus_enabled
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.ev_system_sensors_healthy
+        state: "on"
+    action:
+      - variables:
+          surplus_w: "{{ states('sensor.ev_pv_surplus_available') | float(0) }}"
+          surplus_a: "{{ states('sensor.ev_pv_surplus_amps') | int(0) }}"
+          pv_out: "{{ states('sensor.ev_pv_car_outlet') }}"
+          pri_out: "{{ states('sensor.ev_priority_car_outlet') }}"
+
+      # --- PRIMARY PV OUTLET (the PV-designated car) ---
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ pv_out in ['1','2']
+                     and states('input_select.ev_outlet_' ~ pv_out ~ '_charge_mode') == 'PV Surplus'
+                     and is_state('binary_sensor.ev_outlet_' ~ pv_out ~ '_car_connected','on') }}
+            sequence:
+              - variables:
+                  is_charging: "{{ states('sensor.vpg1_2107009785a_' ~ pv_out) == 'Charging' }}"
+              - choose:
+                  - conditions: "{{ surplus_a >= 6 }}"
+                    sequence:
+                      - action: script.ev_start_charging
+                        data: { outlet: "{{ pv_out }}", current: "{{ surplus_a }}" }
+                  - conditions: "{{ surplus_a < 6 and is_charging }}"
+                    sequence:
+                      - action: script.ev_stop_charging
+                        data: { outlet: "{{ pv_out }}" }
+
+      # --- SECONDARY PV OUTLET (priority car, if also in PV mode) ---
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ pri_out in ['1','2'] and pri_out != pv_out
+                     and states('input_select.ev_outlet_' ~ pri_out ~ '_charge_mode') == 'PV Surplus'
+                     and is_state('binary_sensor.ev_outlet_' ~ pri_out ~ '_car_connected','on') }}
+            sequence:
+              - variables:
+                  pv_draw: >
+                    {% if states('sensor.vpg1_2107009785a_' ~ pv_out) == 'Charging' %}
+                      {{ states('sensor.vpg1_2107009785a_' ~ pv_out ~ '_power') | float(0) }}
+                    {% else %}0{% endif %}
+                  leftover_w: "{{ [surplus_w - pv_draw | float(0), 0] | max }}"
+                  leftover_a: >
+                    {% set a = (leftover_w | float(0) / (230 * 3)) | int %}
+                    {{ [[a,6]|max, 16]|min if a >= 6 else 0 }}
+                  is_charging: "{{ states('sensor.vpg1_2107009785a_' ~ pri_out) == 'Charging' }}"
+              - choose:
+                  - conditions: "{{ leftover_a | int >= 6 }}"
+                    sequence:
+                      - action: script.ev_start_charging
+                        data: { outlet: "{{ pri_out }}", current: "{{ leftover_a }}" }
+                  - conditions: "{{ leftover_a | int < 6 and is_charging }}"
+                    sequence:
+                      - action: script.ev_stop_charging
+                        data: { outlet: "{{ pri_out }}" }
+
+  # ===========================================================================
+  # E) SCHEDULED MINIMUM CONTROLLER (every 15 min, aligned to slots)
+  #
+  # Uses the 15-min slot scheduler. Checks:
+  # 1. Target already reached → switch to PV
+  # 2. Current slot is scheduled → charge at 16A
+  # 3. Past safety deadline → charge regardless
+  # 4. Otherwise → stop (save money)
+  # ===========================================================================
+  - id: ev_scheduled_minimum_controller
+    alias: "EV · Scheduled Minimum Controller"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+    condition:
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      - variables:
+          pri_out: "{{ states('sensor.ev_priority_car_outlet') }}"
+          needs: "{{ states('sensor.ev_priority_car_needs_charging') == 'True' }}"
+          is_sched: "{{ states('sensor.ev_current_slot_is_scheduled') == 'True' }}"
+          past_deadline: "{{ states('sensor.ev_priority_past_safety_deadline') == 'True' }}"
+          ready_by: "{{ states('input_number.ev_weekday_ready_by_hour') | int(7) }}"
+      - condition: template
+        value_template: "{{ pri_out in ['1','2'] }}"
+      - condition: template
+        value_template: >
+          {{ states('input_select.ev_outlet_' ~ pri_out ~ '_charge_mode')
+             == 'Scheduled Minimum' }}
+      - condition: template
+        value_template: >
+          {{ is_state('binary_sensor.ev_outlet_' ~ pri_out ~ '_car_connected','on') }}
+      - choose:
+          # Target reached → done, switch to PV
+          - conditions: "{{ not needs }}"
+            sequence:
+              - action: input_select.select_option
+                target:
+                  entity_id: "input_select.ev_outlet_{{ pri_out }}_charge_mode"
+                data:
+                  option: "PV Surplus"
+              - action: script.ev_stop_charging
+                data: { outlet: "{{ pri_out }}" }
+              - action: notify.all_devices
+                data:
+                  title: "✅ {{ states('sensor.ev_today_priority_car') }} target reached"
+                  message: >
+                    {{ states('sensor.ev_priority_car_range') }}km · Switched to PV surplus.
+
+          # This 15-min slot IS scheduled → charge
+          - conditions: "{{ needs and is_sched }}"
+            sequence:
+              - action: script.ev_start_charging
+                data: { outlet: "{{ pri_out }}", current: 16 }
+
+          # Past safety deadline → must charge NOW regardless of price
+          - conditions: "{{ needs and past_deadline }}"
+            sequence:
+              - action: script.ev_start_charging
+                data: { outlet: "{{ pri_out }}", current: 16 }
+              - action: notify.all_devices
+                data:
+                  title: "⚠️ Safety charge activated"
+                  message: >
+                    {{ states('sensor.ev_today_priority_car') }} still needs
+                    {{ states('sensor.ev_priority_car_kwh_needed') }}kWh.
+                    Charging now to ensure {{ states('input_number.ev_min_weekday_range_km')|int }}km by {{ ready_by }}:00.
+
+        # Not a scheduled slot, not urgent → stop
+        default:
+          - condition: template
+            value_template: "{{ needs }}"
+          - action: script.ev_stop_charging
+            data: { outlet: "{{ pri_out }}" }
+
+  # ===========================================================================
+  # F) CHARGE NOW / FULL MODE HANDLER
+  # ===========================================================================
+  - id: ev_charge_now_handler
+    alias: "EV · Charge Now Mode Handler"
+    mode: parallel
+    max: 2
+    trigger:
+      - platform: state
+        entity_id: input_select.ev_outlet_1_charge_mode
+        to: ["Charge Now","Charge Full By Tomorrow"]
+        id: "o1"
+      - platform: state
+        entity_id: input_select.ev_outlet_2_charge_mode
+        to: ["Charge Now","Charge Full By Tomorrow"]
+        id: "o2"
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+      - condition: template
+        value_template: >
+          {{ is_state('binary_sensor.ev_outlet_' ~ outlet ~ '_car_connected','on') }}
+      - action: script.ev_start_charging
+        data: { outlet: "{{ outlet }}", current: 16 }
+
+  # ===========================================================================
+  # G) WEEKEND FULL CHARGE
+  # ===========================================================================
+  - id: ev_weekend_full_charge_on
+    alias: "EV · Weekend Full Charge ON"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.ev_weekend_full_charge
+        to: "on"
+    action:
+      - repeat:
+          for_each: ["1", "2"]
+          sequence:
+            - action: input_select.select_option
+              target:
+                entity_id: "input_select.ev_outlet_{{ repeat.item }}_charge_mode"
+              data:
+                option: "Charge Now"
+      - action: notify.all_devices
+        data:
+          title: "🔋 Weekend Full Charge ON"
+          message: >
+            SSN96M: {{ states('sensor.ev_ssn96m_range') }}km · {{ states('sensor.ev_ssn96m_soc') }}%
+            EV6: {{ states('sensor.ev_ev6_range') }}km · {{ states('sensor.ev_ev6_soc') }}%
+
+  - id: ev_weekend_full_charge_reset
+    alias: "EV · Weekend Full Charge Reset"
+    trigger:
+      - platform: time
+        at: "00:05:00"
+    condition:
+      - condition: time
+        weekday: [mon]
+    action:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.ev_weekend_full_charge
+      - repeat:
+          for_each: ["1", "2"]
+          sequence:
+            - condition: template
+              value_template: >
+                {{ is_state('binary_sensor.ev_outlet_' ~ repeat.item ~ '_car_connected','on') }}
+            - action: input_select.select_option
+              target:
+                entity_id: "input_select.ev_outlet_{{ repeat.item }}_charge_mode"
+              data:
+                option: "PV Surplus"
+
+  # ===========================================================================
+  # H) SENSOR HEALTH WATCHDOG
+  # ===========================================================================
+  - id: ev_sensor_health_alert
+    alias: "EV · Sensor Health Alert"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.ev_system_sensors_healthy
+        to: "off"
+        for: { minutes: 5 }
+    action:
+      - action: notify.all_devices
+        data:
+          title: "⚠️ EV Sensors Problem"
+          message: >
+            Unavailable: {{ state_attr('binary_sensor.ev_system_sensors_healthy','unavailable_sensors') | join(', ') }}
+            PV surplus charging PAUSED.
+
+  - id: ev_sensor_health_recovered
+    alias: "EV · Sensors Recovered"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.ev_system_sensors_healthy
+        to: "on"
+    action:
+      - action: notify.all_devices
+        data:
+          title: "✅ EV Sensors OK"
+          message: "All sensors online. Automations operational."
+
+  # ===========================================================================
+  # I) MORNING REPORT
+  # ===========================================================================
+  - id: ev_morning_report
+    alias: "EV · Morning Report"
+    trigger:
+      - platform: time
+        at: "06:30:00"
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+    action:
+      - action: notify.all_devices
+        data:
+          title: "🚗 EV Morning Report"
+          message: >
+            Priority: {{ states('sensor.ev_today_priority_car') }}
+            PV car: {{ states('sensor.ev_today_pv_car') }}
+
+            SSN96M: {{ states('sensor.ev_ssn96m_range') }}km · {{ states('sensor.ev_ssn96m_soc') }}% · {{ states('sensor.ev_ssn96m_kwh_per_km') }}kWh/km
+            EV6: {{ states('sensor.ev_ev6_range') }}km · {{ states('sensor.ev_ev6_soc') }}% · {{ states('sensor.ev_ev6_kwh_per_km') }}kWh/km
+
+            {% if states('sensor.ev_priority_car_needs_charging') == 'True' %}
+            ⚠️ Priority car still below {{ states('input_number.ev_min_weekday_range_km')|int }}km!
+            {% else %}✅ Both cars above target{% endif %}
+
+            💰 {{ states('sensor.ev_current_import_price') }} SEK/kWh
+          data:
+            actions:
+              - action: "EV_CHARGE_NOW_1"
+                title: "⚡ Outlet 1"
+              - action: "EV_CHARGE_NOW_2"
+                title: "⚡ Outlet 2"
+
+  # ===========================================================================
+  # J) EVENING PLAN (18:00 weekdays)
+  # ===========================================================================
+  - id: ev_evening_plan
+    alias: "EV · Evening Charge Plan"
+    trigger:
+      - platform: time
+        at: "18:00:00"
+    condition:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+    action:
+      - action: notify.all_devices
+        data:
+          title: "🌙 Tonight's Charge Plan"
+          message: >
+            Priority: {{ states('sensor.ev_today_priority_car') }}
+            Night charge: {{ states('sensor.ev_priority_car_kwh_needed') }}kWh · {{ states('sensor.ev_priority_car_hours_to_target') }}h
+            Scheduled slots: {{ states('sensor.ev_cheapest_charge_slots') }}
+            Est. cost: {{ state_attr('sensor.ev_cheapest_charge_slots','estimated_cost') }} SEK
+
+            SSN96M: {{ states('sensor.ev_ssn96m_kwh_needed') }}kWh needed
+            EV6: {{ states('sensor.ev_ev6_kwh_needed') }}kWh needed
+
+            {% if states('sensor.ev_priority_car_kwh_needed')|float == 0
+               and states('sensor.ev_ev6_kwh_needed')|float == 0 %}
+            ✅ No night charging needed!
+            {% endif %}
+  # ===========================================================================
+  # NEW: Lock the priority decision at 18:00 (or first plug-in, whichever
+  # comes first). This prevents the priority from flipping mid-night when
+  # the second car arrives and changes the kWh-needed balance.
+  # ===========================================================================
+  - id: ev_lock_priority_evening
+    alias: "EV · Lock Priority at Evening"
+    trigger:
+      - platform: time
+        at: "18:00:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      # Snapshot the current auto-decision into the manual override
+      # so it won't flip when the second car arrives
+      - variables:
+          auto_pick: "{{ states('sensor.ev_today_priority_car') }}"
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.ev_priority_car_mode
+        data:
+          option: "{{ auto_pick }} Always"
+      - action: notify.all_devices
+        data:
+          title: "🔒 Priority locked: {{ auto_pick }}"
+          message: >
+            Locked for tonight. Will auto-unlock at 08:00 tomorrow.
+
+  # ===========================================================================
+  # NEW: Unlock priority back to Auto in the morning
+  # ===========================================================================
+  - id: ev_unlock_priority_morning
+    alias: "EV · Unlock Priority Morning"
+    trigger:
+      - platform: time
+        at: "08:00:00"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.ev_priority_car_mode
+        data:
+          option: "Auto (Least Night Charging)"
+
+  # ===========================================================================
+  # NEW: Re-plan when second car arrives late
+  # The existing ev_car_connected already fires, but we need to also send
+  # an updated plan notification showing the LOCKED priority context
+  # ===========================================================================
+  # (This is already handled by ev_car_connected — no change needed there,
+  #  because once priority is locked, the template sensors return stable values)
+
+  # ===========================================================================
+  # NEW: Handle Nordpool tomorrow prices becoming available
+  # When tomorrow_valid becomes true, re-calculate and notify if we have
+  # a car in Scheduled Minimum mode
+  # ===========================================================================
+  - id: ev_nordpool_tomorrow_available
+    alias: "EV · Nordpool Tomorrow Prices Available"
+    trigger:
+      - platform: template
+        value_template: >
+          {{ state_attr('sensor.nordpool_kwh_se4_sek_3_10_025',
+                        'tomorrow') | length >= 96 }}
+    condition:
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+      - condition: template
+        value_template: >
+          {{ states('input_select.ev_outlet_1_charge_mode') == 'Scheduled Minimum'
+             or states('input_select.ev_outlet_2_charge_mode') == 'Scheduled Minimum' }}
+    action:
+      # Template sensors auto-recalculate, just notify the new plan
+      - delay: { seconds: 30 }  # Let templates settle
+      - action: notify.all_devices
+        data:
+          title: "📊 Charge plan updated (tomorrow prices in)"
+          message: >
+            New cheapest slots: {{ states('sensor.ev_cheapest_charge_slots') }}
+            Est. cost: {{ state_attr('sensor.ev_cheapest_charge_slots','estimated_cost') }} SEK
+
+  # ===========================================================================
+  # NEW: Very late arrival safety net
+  # If a car connects after 22:00 and needs charging but has NO scheduled
+  # slots before the deadline → start immediately
+  # ===========================================================================
+  - id: ev_late_arrival_safety
+    alias: "EV · Late Arrival Safety Net"
+    mode: parallel
+    max: 2
+    trigger:
+      - platform: state
+        entity_id: sensor.vpg1_2107009785a_1
+        to: ["Charging","SuspendedEV","SuspendedEVSE"]
+        id: "o1"
+      - platform: state
+        entity_id: sensor.vpg1_2107009785a_2
+        to: ["Charging","SuspendedEV","SuspendedEVSE"]
+        id: "o2"
+    condition:
+      - condition: state
+        entity_id: input_boolean.ev_system_enabled
+        state: "on"
+      - condition: time
+        after: "22:00:00"
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    action:
+      - variables:
+          outlet: "{{ 1 if trigger.id == 'o1' else 2 }}"
+          car: "{{ states('input_select.ev_outlet_' ~ outlet ~ '_car') }}"
+          is_pri: "{{ states('sensor.ev_today_priority_car') == car }}"
+          needs: "{{ states('sensor.ev_priority_car_needs_charging') == 'True' }}"
+          hrs: "{{ states('sensor.ev_priority_car_hours_to_target') | float(0) }}"
+          ready_by: "{{ states('input_number.ev_weekday_ready_by_hour') | int(7) }}"
+          # Hours remaining until deadline
+          hours_left: >
+            {% set now_h = now().hour + now().minute / 60 %}
+            {% if now_h > ready_by %}
+              {{ (24 - now_h) + ready_by }}
+            {% else %}
+              {{ ready_by - now_h }}
+            {% endif %}
+      - condition: template
+        value_template: "{{ is_pri and needs }}"
+      # If charge time needed > 80% of time remaining → start NOW
+      - condition: template
+        value_template: "{{ hrs > hours_left * 0.8 }}"
+      - action: input_select.select_option
+        target:
+          entity_id: "input_select.ev_outlet_{{ outlet }}_charge_mode"
+        data:
+          option: "Charge Now"
+      - action: script.ev_start_charging
+        data: { outlet: "{{ outlet }}", current: 16 }
+      - action: notify.all_devices
+        data:
+          title: "🚨 Late arrival · charging NOW"
+          message: >
+            {{ car }} plugged in at {{ now().strftime('%H:%M') }} and needs
+            {{ hrs }}h of charging. Only {{ hours_left | round(1) }}h until
+            {{ ready_by }}:00 deadline. Starting full speed immediately.

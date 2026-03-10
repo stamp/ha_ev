@@ -1,0 +1,509 @@
+###############################################################################
+# EV CHARGING — TEMPLATE SENSORS
+###############################################################################
+template:
+  # ===========================================================================
+  # BINARY SENSORS
+  # ===========================================================================
+  - binary_sensor:
+      - name: "EV System Sensors Healthy"
+        unique_id: ev_system_sensors_healthy
+        device_class: connectivity
+        icon: "{{ 'mdi:check-network' if this.state == 'on' else 'mdi:alert-network' }}"
+        state: >
+          {% set critical = [
+            'sensor.vpg1_2107009785a_1',
+            'sensor.vpg1_2107009785a_2',
+            'sensor.symo_15_0_3_m_1_ac_power',
+            'sensor.grid_power_sum_tibber',
+            'sensor.nordpool_kwh_se4_sek_3_10_025'
+          ] %}
+          {% set ns = namespace(ok=true) %}
+          {% for s in critical %}
+            {% if states(s) in ['unavailable','unknown'] %}
+              {% set ns.ok = false %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.ok }}
+        attributes:
+          unavailable_sensors: >
+            {% set all = [
+              'sensor.vpg1_2107009785a_1',
+              'sensor.vpg1_2107009785a_2',
+              'sensor.vpg1_2107009785a_1_power',
+              'sensor.vpg1_2107009785a_2_power',
+              'sensor.vpg1_2107009785a_total_energy',
+              'sensor.symo_15_0_3_m_1_ac_power',
+              'sensor.grid_power_sum_tibber',
+              'sensor.nordpool_kwh_se4_sek_3_10_025',
+              'sensor.ssn96m_state_of_charge',
+              'sensor.ssn96m_range_electric',
+              'sensor.ssn96m_electric_consumption_start',
+              'sensor.ev6_ev_battery_level',
+              'sensor.ev6_ev_range',
+              'sensor.ev6_average_energy_consumption'
+            ] %}
+            {% set ns = namespace(bad=[]) %}
+            {% for s in all %}
+              {% if states(s) in ['unavailable','unknown'] %}
+                {% set ns.bad = ns.bad + [s] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.bad }}
+
+      - name: "EV Outlet 1 Car Connected"
+        unique_id: ev_outlet_1_car_connected
+        device_class: plug
+        state: >
+          {{ states('sensor.vpg1_2107009785a_1')
+             in ['Charging','SuspendedEV','SuspendedEVSE'] }}
+
+      - name: "EV Outlet 2 Car Connected"
+        unique_id: ev_outlet_2_car_connected
+        device_class: plug
+        state: >
+          {{ states('sensor.vpg1_2107009785a_2')
+             in ['Charging','SuspendedEV','SuspendedEVSE'] }}
+
+  # ===========================================================================
+  # SENSORS
+  # ===========================================================================
+  - sensor:
+      # -----------------------------------------------------------------------
+      # Normalised consumption: kWh/km
+      # SSN96M reports kWh/100km (e.g. "24.5") → ÷ 100
+      # EV6 reports Wh/km (e.g. "230") → ÷ 1000
+      # -----------------------------------------------------------------------
+      - name: "EV SSN96M kWh per km"
+        unique_id: ev_ssn96m_kwh_per_km
+        unit_of_measurement: "kWh/km"
+        icon: mdi:lightning-bolt
+        state: >
+          {% set raw = states('sensor.ssn96m_electric_consumption_start') | float(-1) %}
+          {{ (raw / 100) | round(3) if raw > 0 else 0.200 }}
+        availability: "{{ true }}"
+
+      - name: "EV EV6 kWh per km"
+        unique_id: ev_ev6_kwh_per_km
+        unit_of_measurement: "kWh/km"
+        icon: mdi:lightning-bolt
+        state: >
+          {% set raw = states('sensor.ev6_average_energy_consumption') | float(-1) %}
+          {{ (raw / 1000) | round(3) if raw > 0 else 0.200 }}
+        availability: "{{ true }}"
+
+      # -----------------------------------------------------------------------
+      # Safe range / SOC wrappers
+      # -----------------------------------------------------------------------
+      - name: "EV SSN96M Range"
+        unique_id: ev_ssn96m_range
+        unit_of_measurement: "km"
+        icon: mdi:map-marker-distance
+        state: "{{ states('sensor.ssn96m_range_electric') | float(0) }}"
+        availability: "{{ states('sensor.ssn96m_range_electric') not in ['unavailable','unknown'] }}"
+
+      - name: "EV SSN96M SOC"
+        unique_id: ev_ssn96m_soc
+        unit_of_measurement: "%"
+        icon: mdi:battery
+        state: "{{ states('sensor.ssn96m_state_of_charge') | float(0) }}"
+        availability: "{{ states('sensor.ssn96m_state_of_charge') not in ['unavailable','unknown'] }}"
+
+      - name: "EV EV6 Range"
+        unique_id: ev_ev6_range
+        unit_of_measurement: "km"
+        icon: mdi:map-marker-distance
+        state: "{{ states('sensor.ev6_ev_range') | float(0) }}"
+        availability: "{{ states('sensor.ev6_ev_range') not in ['unavailable','unknown'] }}"
+
+      - name: "EV EV6 SOC"
+        unique_id: ev_ev6_soc
+        unit_of_measurement: "%"
+        icon: mdi:battery
+        state: "{{ states('sensor.ev6_ev_battery_level') | float(0) }}"
+        availability: "{{ states('sensor.ev6_ev_battery_level') not in ['unavailable','unknown'] }}"
+
+      # -----------------------------------------------------------------------
+      # kWh each car needs to reach weekday target
+      # -----------------------------------------------------------------------
+      - name: "EV SSN96M kWh Needed"
+        unique_id: ev_ssn96m_kwh_needed
+        unit_of_measurement: "kWh"
+        icon: mdi:battery-charging
+        state: >
+          {% set deficit = [states('input_number.ev_min_weekday_range_km') | float(80)
+                            - states('sensor.ev_ssn96m_range') | float(0), 0] | max %}
+          {% set kwh_km = states('sensor.ev_ssn96m_kwh_per_km') | float(0.20) %}
+          {{ (deficit * kwh_km) | round(1) }}
+
+      - name: "EV EV6 kWh Needed"
+        unique_id: ev_ev6_kwh_needed
+        unit_of_measurement: "kWh"
+        icon: mdi:battery-charging
+        state: >
+          {% set deficit = [states('input_number.ev_min_weekday_range_km') | float(80)
+                            - states('sensor.ev_ev6_range') | float(0), 0] | max %}
+          {% set kwh_km = states('sensor.ev_ev6_kwh_per_km') | float(0.20) %}
+          {{ (deficit * kwh_km) | round(1) }}
+
+      # -----------------------------------------------------------------------
+      # 15-minute SLOTS needed (at 3×230V×16A = 11.04 kW)
+      # Each slot = 0.25h → delivers 2.76 kWh per slot
+      # -----------------------------------------------------------------------
+      - name: "EV SSN96M Slots Needed"
+        unique_id: ev_ssn96m_slots_needed
+        unit_of_measurement: "slots"
+        icon: mdi:clock-fast
+        state: >
+          {% set kwh = states('sensor.ev_ssn96m_kwh_needed') | float(0) %}
+          {% set kwh_per_slot = 3 * 230 * 16 / 1000 * 0.25 %}
+          {{ (kwh / kwh_per_slot) | round(0, 'ceil') | int if kwh > 0 else 0 }}
+
+      - name: "EV EV6 Slots Needed"
+        unique_id: ev_ev6_slots_needed
+        unit_of_measurement: "slots"
+        icon: mdi:clock-fast
+        state: >
+          {% set kwh = states('sensor.ev_ev6_kwh_needed') | float(0) %}
+          {% set kwh_per_slot = 3 * 230 * 16 / 1000 * 0.25 %}
+          {{ (kwh / kwh_per_slot) | round(0, 'ceil') | int if kwh > 0 else 0 }}
+
+      # -----------------------------------------------------------------------
+      # Hours to target (human-readable)
+      # -----------------------------------------------------------------------
+      - name: "EV SSN96M Hours to Target"
+        unique_id: ev_ssn96m_hours_to_target
+        unit_of_measurement: "h"
+        icon: mdi:timer-sand
+        state: >
+          {{ (states('sensor.ev_ssn96m_slots_needed') | int(0) * 0.25) | round(2) }}
+
+      - name: "EV EV6 Hours to Target"
+        unique_id: ev_ev6_hours_to_target
+        unit_of_measurement: "h"
+        icon: mdi:timer-sand
+        state: >
+          {{ (states('sensor.ev_ev6_slots_needed') | int(0) * 0.25) | round(2) }}
+
+      # -----------------------------------------------------------------------
+      # SMART PRIORITY: car that needs LEAST night charging → priority
+      # The other car gets maximum PV time during the day
+      # -----------------------------------------------------------------------
+      - name: "EV Today Priority Car"
+        unique_id: ev_today_priority_car
+        icon: mdi:car-key
+        state: >
+          {% set mode = states('input_select.ev_priority_car_mode') %}
+          {% if mode == 'SSN96M Always' %}SSN96M
+          {% elif mode == 'EV6 Always' %}EV6
+          {% else %}
+            {% set ssn = states('sensor.ev_ssn96m_kwh_needed') | float(999) %}
+            {% set ev6 = states('sensor.ev_ev6_kwh_needed') | float(999) %}
+            {{ 'SSN96M' if ssn <= ev6 else 'EV6' }}
+          {% endif %}
+
+      - name: "EV Today PV Car"
+        unique_id: ev_today_pv_car
+        icon: mdi:car-outline
+        state: >
+          {{ 'EV6' if states('sensor.ev_today_priority_car') == 'SSN96M' else 'SSN96M' }}
+
+      # -----------------------------------------------------------------------
+      # Map cars → outlets
+      # -----------------------------------------------------------------------
+      - name: "EV Priority Car Outlet"
+        unique_id: ev_priority_car_outlet
+        icon: mdi:power-plug
+        state: >
+          {% set car = states('sensor.ev_today_priority_car') %}
+          {% if states('input_select.ev_outlet_1_car') == car %}1
+          {% elif states('input_select.ev_outlet_2_car') == car %}2
+          {% else %}unknown{% endif %}
+
+      - name: "EV PV Car Outlet"
+        unique_id: ev_pv_car_outlet
+        icon: mdi:power-plug-outline
+        state: >
+          {% set car = states('sensor.ev_today_pv_car') %}
+          {% if states('input_select.ev_outlet_1_car') == car %}1
+          {% elif states('input_select.ev_outlet_2_car') == car %}2
+          {% else %}unknown{% endif %}
+
+      # -----------------------------------------------------------------------
+      # Priority car aggregated info
+      # -----------------------------------------------------------------------
+      - name: "EV Priority Car Range"
+        unique_id: ev_priority_car_range
+        unit_of_measurement: "km"
+        icon: mdi:map-marker-check
+        state: >
+          {% set c = states('sensor.ev_today_priority_car') %}
+          {{ states('sensor.ev_ssn96m_range') if c == 'SSN96M'
+             else states('sensor.ev_ev6_range') }}
+
+      - name: "EV Priority Car SOC"
+        unique_id: ev_priority_car_soc
+        unit_of_measurement: "%"
+        icon: mdi:battery-heart
+        state: >
+          {% set c = states('sensor.ev_today_priority_car') %}
+          {{ states('sensor.ev_ssn96m_soc') if c == 'SSN96M'
+             else states('sensor.ev_ev6_soc') }}
+
+      - name: "EV Priority Car kWh Needed"
+        unique_id: ev_priority_car_kwh_needed
+        unit_of_measurement: "kWh"
+        icon: mdi:battery-arrow-up
+        state: >
+          {% set c = states('sensor.ev_today_priority_car') %}
+          {{ states('sensor.ev_ssn96m_kwh_needed') if c == 'SSN96M'
+             else states('sensor.ev_ev6_kwh_needed') }}
+
+      - name: "EV Priority Car Slots Needed"
+        unique_id: ev_priority_car_slots_needed
+        unit_of_measurement: "slots"
+        icon: mdi:calendar-clock
+        state: >
+          {% set c = states('sensor.ev_today_priority_car') %}
+          {{ states('sensor.ev_ssn96m_slots_needed') if c == 'SSN96M'
+             else states('sensor.ev_ev6_slots_needed') }}
+
+      - name: "EV Priority Car Hours to Target"
+        unique_id: ev_priority_car_hours_to_target
+        unit_of_measurement: "h"
+        icon: mdi:timer-sand
+        state: >
+          {% set c = states('sensor.ev_today_priority_car') %}
+          {{ states('sensor.ev_ssn96m_hours_to_target') if c == 'SSN96M'
+             else states('sensor.ev_ev6_hours_to_target') }}
+
+      - name: "EV Priority Car Needs Charging"
+        unique_id: ev_priority_car_needs_charging
+        icon: mdi:battery-alert
+        state: >
+          {{ states('sensor.ev_priority_car_kwh_needed') | float(0) > 0.5 }}
+
+      # -----------------------------------------------------------------------
+      # PV Surplus available for EV (watts)
+      # grid_power_sum_tibber: positive = importing, negative = exporting
+      # -----------------------------------------------------------------------
+      - name: "EV PV Surplus Available"
+        unique_id: ev_pv_surplus_available
+        unit_of_measurement: "W"
+        icon: mdi:solar-power-variant
+        state: >
+          {% set grid = states('sensor.grid_power_sum_tibber') | float(0) %}
+          {% set buffer = states('input_number.ev_pv_surplus_hysteresis_watts') | float(300) %}
+          {{ [(-1 * grid) - buffer, 0] | max | round(0) }}
+
+      - name: "EV PV Surplus Amps"
+        unique_id: ev_pv_surplus_amps
+        unit_of_measurement: "A"
+        icon: mdi:current-ac
+        state: >
+          {% set w = states('sensor.ev_pv_surplus_available') | float(0) %}
+          {% set a = (w / (230 * 3)) | int %}
+          {{ [[a, 6] | max, 16] | min if a >= 6 else 0 }}
+
+      # -----------------------------------------------------------------------
+      # Current import price (spot + 1 SEK grid fee)
+      # -----------------------------------------------------------------------
+      - name: "EV Current Import Price"
+        unique_id: ev_current_import_price
+        unit_of_measurement: "SEK/kWh"
+        icon: mdi:currency-usd
+        state: >
+          {{ (states('sensor.nordpool_kwh_se4_sek_3_10_025') | float(0) + 1) | round(3) }}
+
+      # -----------------------------------------------------------------------
+      # CHEAPEST OVERNIGHT 15-MIN SLOTS
+      #
+      # Nordpool .today/.tomorrow = 96 floats each (15-min granularity)
+      #   Index 0  = 00:00-00:15
+      #   Index 4  = 01:00-01:15
+      #   Index 95 = 23:45-00:00
+      #
+      # We pick the cheapest N slots from:
+      #   - remaining today slots (from current 15-min slot onwards)
+      #   - tomorrow slots up to ready_by × 4
+      #
+      # Output: comma-separated slot indices in format "Dhh:mm" for readability
+      # Internal attribute: list of {day, index, hour, minute} for the automation
+      # -----------------------------------------------------------------------
+      - name: "EV Cheapest Charge Slots"
+        unique_id: ev_cheapest_charge_slots
+        icon: mdi:cash-clock
+        state: >
+          {% set pt = state_attr('sensor.nordpool_kwh_se4_sek_3_10_025','today') %}
+          {% set ptm = state_attr('sensor.nordpool_kwh_se4_sek_3_10_025','tomorrow') %}
+          {% set ready_by = states('input_number.ev_weekday_ready_by_hour') | int(7) %}
+          {% set slots_needed = states('sensor.ev_priority_car_slots_needed') | int(0) %}
+          {% if slots_needed == 0 %}
+            none_needed
+          {% elif pt is none or pt | length < 96 %}
+            no_price_data
+          {% else %}
+            {% set cur_slot = now().hour * 4 + (now().minute // 15) %}
+            {% set ns = namespace(candidates=[]) %}
+            {# Remaining slots today #}
+            {% for i in range(cur_slot, 96) %}
+              {% set ns.candidates = ns.candidates +
+                [{'day':'today','idx':i,'price': pt[i]|float(999)}] %}
+            {% endfor %}
+            {# Tomorrow slots until ready_by (if available) #}
+            {% set tmrw_end = ready_by * 4 %}
+            {% if ptm is not none and ptm | length >= tmrw_end %}
+              {% for i in range(0, tmrw_end) %}
+                {% set ns.candidates = ns.candidates +
+                  [{'day':'tomorrow','idx':i,'price': ptm[i]|float(999)}] %}
+              {% endfor %}
+            {% else %}
+              {# Fallback: reuse today's early-hour prices as estimate #}
+              {% for i in range(0, tmrw_end) %}
+                {% set ns.candidates = ns.candidates +
+                  [{'day':'tmrw_est','idx':i,'price': pt[i]|float(999)}] %}
+              {% endfor %}
+            {% endif %}
+            {# Sort by price, pick cheapest N #}
+            {% set picked = ns.candidates | sort(attribute='price')
+                            | list %}
+            {% set picked = picked[:slots_needed] %}
+            {# Format as readable times #}
+            {% set ns2 = namespace(out=[]) %}
+            {% for s in picked | sort(attribute='idx') | sort(attribute='day') %}
+              {% set h = s.idx // 4 %}
+              {% set m = (s.idx % 4) * 15 %}
+              {% set label = 'T' if s.day == 'today' else 'M' %}
+              {% set ns2.out = ns2.out +
+                [label ~ '%02d'|format(h) ~ ':' ~ '%02d'|format(m)] %}
+            {% endfor %}
+            {{ ns2.out | join(', ') }}
+          {% endif %}
+        attributes:
+          # Machine-readable list for the automation to consume
+          scheduled_slots: >
+            {% set pt = state_attr('sensor.nordpool_kwh_se4_sek_3_10_025','today') %}
+            {% set ptm = state_attr('sensor.nordpool_kwh_se4_sek_3_10_025','tomorrow') %}
+            {% set ready_by = states('input_number.ev_weekday_ready_by_hour') | int(7) %}
+            {% set slots_needed = states('sensor.ev_priority_car_slots_needed') | int(0) %}
+            {% if slots_needed == 0 or pt is none or pt | length < 96 %}
+              []
+            {% else %}
+              {% set cur_slot = now().hour * 4 + (now().minute // 15) %}
+              {% set ns = namespace(candidates=[]) %}
+              {% for i in range(cur_slot, 96) %}
+                {% set ns.candidates = ns.candidates +
+                  [{'day':'today','idx':i,'price': pt[i]|float(999)}] %}
+              {% endfor %}
+              {% set tmrw_end = ready_by * 4 %}
+              {% if ptm is not none and ptm | length >= tmrw_end %}
+                {% for i in range(0, tmrw_end) %}
+                  {% set ns.candidates = ns.candidates +
+                    [{'day':'tomorrow','idx':i,'price': ptm[i]|float(999)}] %}
+                {% endfor %}
+              {% else %}
+                {% for i in range(0, tmrw_end) %}
+                  {% set ns.candidates = ns.candidates +
+                    [{'day':'tmrw_est','idx':i,'price': pt[i]|float(999)}] %}
+                {% endfor %}
+              {% endif %}
+              {% set picked = ns.candidates | sort(attribute='price')
+                              | list %}
+              {% set picked = picked[:slots_needed] %}
+              {{ picked | map(attribute='day') | zip(picked | map(attribute='idx'))
+                 | map('join',':') | list }}
+            {% endif %}
+          # For safety fallback: latest slot index before which charging MUST start
+          latest_start_slot: >
+            {% set ready_by = states('input_number.ev_weekday_ready_by_hour') | int(7) %}
+            {% set slots_needed = states('sensor.ev_priority_car_slots_needed') | int(0) %}
+            {% set margin_slots = 2 %}
+            {{ [ready_by * 4 - slots_needed - margin_slots, 0] | max }}
+          estimated_cost: >
+            {% set pt = state_attr('sensor.nordpool_kwh_se4_sek_3_10_025','today') %}
+            {% set ptm = state_attr('sensor.nordpool_kwh_se4_sek_3_10_025','tomorrow') %}
+            {% set ready_by = states('input_number.ev_weekday_ready_by_hour') | int(7) %}
+            {% set slots_needed = states('sensor.ev_priority_car_slots_needed') | int(0) %}
+            {% if slots_needed == 0 or pt is none or pt | length < 96 %}
+              0
+            {% else %}
+              {% set cur_slot = now().hour * 4 + (now().minute // 15) %}
+              {% set ns = namespace(candidates=[]) %}
+              {% for i in range(cur_slot, 96) %}
+                {% set ns.candidates = ns.candidates +
+                  [{'price': pt[i]|float(999)}] %}
+              {% endfor %}
+              {% set tmrw_end = ready_by * 4 %}
+              {% if ptm is not none and ptm | length >= tmrw_end %}
+                {% for i in range(0, tmrw_end) %}
+                  {% set ns.candidates = ns.candidates +
+                    [{'price': ptm[i]|float(999)}] %}
+                {% endfor %}
+              {% endif %}
+              {% set picked = ns.candidates | sort(attribute='price')
+                              | list %}
+              {% set picked = picked[:slots_needed] %}
+              {% set kwh_per_slot = 3 * 230 * 16 / 1000 * 0.25 %}
+              {% set ns2 = namespace(total=0) %}
+              {% for s in picked %}
+                {% set ns2.total = ns2.total + (s.price + 1) * kwh_per_slot %}
+              {% endfor %}
+              {{ ns2.total | round(2) }}
+            {% endif %}
+
+      # -----------------------------------------------------------------------
+      # Is NOW a scheduled cheap slot? (for the 15-min automation)
+      # -----------------------------------------------------------------------
+      - name: "EV Current Slot Is Scheduled"
+        unique_id: ev_current_slot_is_scheduled
+        icon: mdi:calendar-check
+        state: >
+          {% set slots = state_attr('sensor.ev_cheapest_charge_slots','scheduled_slots') %}
+          {% if slots is none or slots | length == 0 %}
+            false
+          {% else %}
+            {% set cur_hour = now().hour %}
+            {% set cur_minute = now().minute %}
+            {% set cur_slot = cur_hour * 4 + (cur_minute // 15) %}
+            {# Check if today:cur_slot is in the list #}
+            {% set today_key = 'today:' ~ cur_slot | string %}
+            {% set tmrw_key = 'tomorrow:' ~ cur_slot | string %}
+            {% set est_key = 'tmrw_est:' ~ cur_slot | string %}
+            {# Before midnight → check 'today' entries. After midnight → 'tomorrow' entries #}
+            {% set ns = namespace(found=false) %}
+            {% for s in slots %}
+              {% set parts = s.split(':') %}
+              {% set s_day = parts[0] %}
+              {% set s_idx = parts[1] | int %}
+              {% if s_idx == cur_slot %}
+                {% if cur_hour >= 12 and s_day == 'today' %}
+                  {% set ns.found = true %}
+                {% elif cur_hour < 12 and s_day in ['tomorrow','tmrw_est'] %}
+                  {% set ns.found = true %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.found }}
+          {% endif %}
+
+      # -----------------------------------------------------------------------
+      # Latest start: is it past the safety deadline?
+      # -----------------------------------------------------------------------
+      - name: "EV Priority Past Safety Deadline"
+        unique_id: ev_priority_past_safety_deadline
+        icon: mdi:clock-alert
+        state: >
+          {% set ready_by = states('input_number.ev_weekday_ready_by_hour') | int(7) %}
+          {% set latest_slot = state_attr('sensor.ev_cheapest_charge_slots',
+                               'latest_start_slot') | int(0) %}
+          {% set cur_slot = now().hour * 4 + (now().minute // 15) %}
+          {% set needs = states('sensor.ev_priority_car_needs_charging') %}
+          {# After midnight and before ready_by, check if we're past deadline #}
+          {% if now().hour < ready_by and needs == 'True' %}
+            {{ cur_slot >= latest_slot }}
+          {% elif now().hour >= 12 and needs == 'True' %}
+            {# Evening: latest_slot refers to tomorrow, so translate #}
+            false
+          {% else %}
+            false
+          {% endif %}
