@@ -172,7 +172,7 @@ automation:
     mode: single
     trigger:
       - platform: time_pattern
-        seconds: "/60"
+        minutes: "*"
     condition:
       - condition: state
         entity_id: input_boolean.ev_system_enabled
