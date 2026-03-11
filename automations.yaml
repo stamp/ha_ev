@@ -193,21 +193,28 @@ automation:
         state: "on"
     action:
       - repeat:
-          for_each: ["1", "2"]
+          # Each item: outlet number (matches entity names) + connector ID (0-based for ChargeAmps API)
+          for_each:
+            - { outlet: "1" }
+            - { outlet: "2" }
           sequence:
             - variables:
-                outlet: "{{ repeat.item }}"
+                outlet: "{{ repeat.item.outlet }}"
+                connector: "{{ repeat.item.connector }}"
                 target: "{{ states('sensor.ev_outlet_' ~ outlet ~ '_target_amps') | int(0) }}"
                 is_charging: "{{ states('sensor.vpg1_2107009785a_' ~ outlet) == 'Charging' }}"
                 connected: "{{ is_state('binary_sensor.ev_outlet_' ~ outlet ~ '_car_connected', 'on') }}"
+                cp_id: "{{ state_attr('sensor.vpg1_2107009785a_' ~ outlet, 'charge_point_id') }}"
+                connector_id: "{{ state_attr('sensor.vpg1_2107009785a_' ~ outlet, 'connector_id') }}"
             - choose:
                 # Should be charging → set current + ensure switch is on
-                - conditions: "{{ target > 0 and connected }}"
+                - conditions: "{{ target > 0 and connected and cp_id not in ['','None','unknown','unavailable',None] }}"
                   sequence:
-                    - action: script.ev_set_outlet_current
+                    - action: chargeamps.set_max_current
                       data:
-                        outlet: "{{ outlet }}"
-                        current: "{{ target }}"
+                        chargepoint: "{{ cp_id }}"
+                        connector: "{{ connector_id }}"
+                        max_current: "{{ [[target, 6] | max, 16] | min }}"
                     - condition: template
                       value_template: "{{ not is_charging }}"
                     - delay: { seconds: 2 }
