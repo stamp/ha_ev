@@ -507,3 +507,128 @@ template:
           {% else %}
             false
           {% endif %}
+
+      # -----------------------------------------------------------------------
+      # TOTAL PV AVAILABLE FOR EV (watts)
+      #
+      # Unlike ev_pv_surplus_available (which shows ADDITIONAL export),
+      # this shows the total PV power budget for EV charging:
+      #   total = surplus + current EV draw
+      # This prevents the target from oscillating when charging starts
+      # (surplus drops but the EV is using that power — net available stays
+      # stable).
+      # -----------------------------------------------------------------------
+      - name: "EV PV Total Available for EV"
+        unique_id: ev_pv_total_available_for_ev
+        unit_of_measurement: "W"
+        icon: mdi:solar-power-variant
+        state: >
+          {% set grid = states('sensor.grid_power_sum_tibber') | float(0) %}
+          {% set buffer = states('input_number.ev_pv_surplus_hysteresis_watts') | float(300) %}
+          {% set ev1 = states('sensor.vpg1_2107009785a_1_power') | float(0)
+                       if states('sensor.vpg1_2107009785a_1') == 'Charging' else 0 %}
+          {% set ev2 = states('sensor.vpg1_2107009785a_2_power') | float(0)
+                       if states('sensor.vpg1_2107009785a_2') == 'Charging' else 0 %}
+          {{ [(-1 * grid) - buffer + ev1 + ev2, 0] | max | round(0) }}
+
+      # -----------------------------------------------------------------------
+      # TARGET AMPS PER OUTLET
+      #
+      # The single source of truth for "what should this outlet be doing?"
+      # Computed from: charge mode, connection state, PV budget, schedule.
+      #   0   = should NOT be charging
+      #   6–16 = should be charging at this amperage
+      # -----------------------------------------------------------------------
+      - name: "EV Outlet 1 Target Amps"
+        unique_id: ev_outlet_1_target_amps
+        unit_of_measurement: "A"
+        icon: mdi:current-ac
+        state: >
+          {% set mode = states('input_select.ev_outlet_1_charge_mode') %}
+          {% set connected = is_state('binary_sensor.ev_outlet_1_car_connected', 'on') %}
+          {% if not connected or mode == 'Off' %}
+            0
+          {% elif mode in ['Charge Now', 'Charge Full By Tomorrow'] %}
+            16
+          {% elif mode == 'PV Surplus' %}
+            {% if is_state('input_boolean.ev_pv_surplus_enabled', 'off') %}
+              0
+            {% else %}
+              {% set pv_out = states('sensor.ev_pv_car_outlet') %}
+              {% set total_w = states('sensor.ev_pv_total_available_for_ev') | float(0) %}
+              {% if pv_out == '1' %}
+                {# Primary PV outlet — first allocation from total budget #}
+                {% set a = (total_w / 690) | int %}
+                {{ [[a, 6] | max, 16] | min if a >= 6 else 0 }}
+              {% else %}
+                {# Secondary — gets leftover after primary PV outlet #}
+                {% set o2_mode = states('input_select.ev_outlet_2_charge_mode') %}
+                {% set o2_conn = is_state('binary_sensor.ev_outlet_2_car_connected', 'on') %}
+                {% if o2_mode == 'PV Surplus' and o2_conn and pv_out == '2' %}
+                  {% set pri_a = (total_w / 690) | int %}
+                  {% set pri_a = [[pri_a, 6] | max, 16] | min if pri_a >= 6 else 0 %}
+                  {% set leftover = total_w - pri_a * 690 %}
+                  {% set b = (leftover / 690) | int %}
+                  {{ [[b, 6] | max, 16] | min if b >= 6 else 0 }}
+                {% else %}
+                  {# Other outlet not using PV — I get entire budget #}
+                  {% set a = (total_w / 690) | int %}
+                  {{ [[a, 6] | max, 16] | min if a >= 6 else 0 }}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% elif mode == 'Scheduled Minimum' %}
+            {% set needs = states('sensor.ev_priority_car_needs_charging') == 'True' %}
+            {% set is_sched = states('sensor.ev_current_slot_is_scheduled') == 'True' %}
+            {% set past_deadline = states('sensor.ev_priority_past_safety_deadline') == 'True' %}
+            {{ 16 if needs and (is_sched or past_deadline) else 0 }}
+          {% else %}
+            0
+          {% endif %}
+
+      - name: "EV Outlet 2 Target Amps"
+        unique_id: ev_outlet_2_target_amps
+        unit_of_measurement: "A"
+        icon: mdi:current-ac
+        state: >
+          {% set mode = states('input_select.ev_outlet_2_charge_mode') %}
+          {% set connected = is_state('binary_sensor.ev_outlet_2_car_connected', 'on') %}
+          {% if not connected or mode == 'Off' %}
+            0
+          {% elif mode in ['Charge Now', 'Charge Full By Tomorrow'] %}
+            16
+          {% elif mode == 'PV Surplus' %}
+            {% if is_state('input_boolean.ev_pv_surplus_enabled', 'off') %}
+              0
+            {% else %}
+              {% set pv_out = states('sensor.ev_pv_car_outlet') %}
+              {% set total_w = states('sensor.ev_pv_total_available_for_ev') | float(0) %}
+              {% if pv_out == '2' %}
+                {# Primary PV outlet — first allocation from total budget #}
+                {% set a = (total_w / 690) | int %}
+                {{ [[a, 6] | max, 16] | min if a >= 6 else 0 }}
+              {% else %}
+                {# Secondary — gets leftover after primary PV outlet #}
+                {% set o1_mode = states('input_select.ev_outlet_1_charge_mode') %}
+                {% set o1_conn = is_state('binary_sensor.ev_outlet_1_car_connected', 'on') %}
+                {% if o1_mode == 'PV Surplus' and o1_conn and pv_out == '1' %}
+                  {% set pri_a = (total_w / 690) | int %}
+                  {% set pri_a = [[pri_a, 6] | max, 16] | min if pri_a >= 6 else 0 %}
+                  {% set leftover = total_w - pri_a * 690 %}
+                  {% set b = (leftover / 690) | int %}
+                  {{ [[b, 6] | max, 16] | min if b >= 6 else 0 }}
+                {% else %}
+                  {# Other outlet not using PV — I get entire budget #}
+                  {% set a = (total_w / 690) | int %}
+                  {{ [[a, 6] | max, 16] | min if a >= 6 else 0 }}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% elif mode == 'Scheduled Minimum' %}
+            {% set needs = states('sensor.ev_priority_car_needs_charging') == 'True' %}
+            {% set is_sched = states('sensor.ev_current_slot_is_scheduled') == 'True' %}
+            {% set past_deadline = states('sensor.ev_priority_past_safety_deadline') == 'True' %}
+            {{ 16 if needs and (is_sched or past_deadline) else 0 }}
+          {% else %}
+            0
+          {% endif %}
